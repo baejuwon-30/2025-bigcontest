@@ -1,97 +1,146 @@
 # app.py — Store Agents (3 buttons) + Universal(JSON→Gemini) + VS Leader(Prebuilt JSON explain)
-# - 버튼 3개: 우리 가게 데이터 분석(1) / 온라인 대중성 스코어 분석(2) / 1위 가게 vs 우리 가게 분석(3)
-# - (1) Store Analysis: Milvus(HF 임베딩) RAG로 상위 문맥 수집 → Gemini 보고서 생성(마크다운)
-# - (2) Universal: data/{매장명}_persona_report.json → Gemini가 지표/정렬/액션 매핑
-# - (3) VS Leader: 사전 생성된 data/{우리}_vs_leader.json을 로드해 설명(LLM 호출 없음)
+# - (1) 우리 가게 데이터 분석: Milvus(HF 임베딩) RAG → Gemini 보고서(마크다운)
+# - (2) 온라인 대중성 스코어 분석: data/{매장명}_persona_report.json → Gemini가 지표/정렬/매핑
+# - (3) 1위 가게 vs 우리 가게: 사전 생성 data/{매장명}_vs_leader.json 설명(LLM 호출 없음)
 
 import json
+import unicodedata
 from pathlib import Path
 import streamlit as st
 from jinja2 import Template
-import google.generativeai as genai  # 1,2번에서 LLM 호출
-from pymilvus import MilvusClient
 
 # ================== Page ==================
 st.set_page_config(page_title="세 가지 에이전트로 가게 분석하기", page_icon="🧭", layout="centered")
 st.title("세 가지 에이전트로 우리 가게 분석하기")
 
+# ================== Paths (agent/app.py 기준 고정) ==================
+BASE_DIR = Path(__file__).parent          # .../agent
+DATA_DIR = BASE_DIR / "data"              # .../agent/data
+
+def nfc(s: str) -> str:
+    """macOS↔Linux 한글 파일명 정규화 차이 방지"""
+    return unicodedata.normalize("NFC", (s or "").strip())
+
+def find_report_path(store_name: str) -> Path | None:
+    """agent/data에서 <매장명>_persona_report.json 탐색"""
+    target = nfc(store_name)
+    exact = DATA_DIR / f"{target}_persona_report.json"
+    if exact.exists():
+        return exact
+    if DATA_DIR.exists():
+        for p in DATA_DIR.glob("*_persona_report.json"):
+            stem = nfc(p.name.replace("_persona_report.json", ""))
+            if stem.lower() == target.lower():
+                return p
+    return None
+
+def find_vs_leader_path(store_name: str) -> Path | None:
+    """agent/data에서 <매장명>_vs_leader.json 탐색"""
+    target = nfc(store_name)
+    exact = DATA_DIR / f"{target}_vs_leader.json"
+    if exact.exists():
+        return exact
+    if DATA_DIR.exists():
+        for p in DATA_DIR.glob("*_vs_leader.json"):
+            stem = nfc(p.name.replace("_vs_leader.json", ""))
+            if stem.lower() == target.lower():
+                return p
+    return None
+
 # ================== Secrets ==================
-GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY")
-ZILLIZ_URI     = st.secrets.get("ZILLIZ_URI")
-ZILLIZ_TOKEN   = st.secrets.get("ZILLIZ_TOKEN")
-HF_TOKEN       = st.secrets.get("HF_TOKEN")
-# OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")  # Gemini 사용하므로 불필요
+GEMINI_API_KEY = (st.secrets.get("GEMINI_API_KEY") or "").strip()
+ZILLIZ_URI     = (st.secrets.get("ZILLIZ_URI") or "").strip()
+ZILLIZ_TOKEN   = (st.secrets.get("ZILLIZ_TOKEN") or "").strip()
+HF_TOKEN       = (st.secrets.get("HF_TOKEN") or "").strip()
 
 # ================== Cached clients ==================
 @st.cache_resource(show_spinner=False)
 def get_gemini_client():
     if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY가 설정되지 않았습니다. .streamlit/secrets.toml을 확인하세요.")
+        raise RuntimeError("GEMINI_API_KEY가 설정되지 않았습니다. Streamlit Secrets에 추가하세요.")
+    try:
+        import google.generativeai as genai  # 지연 import
+    except ModuleNotFoundError as e:
+        raise RuntimeError("google-generativeai 패키지가 없습니다. requirements.txt에 'google-generativeai'를 추가하세요.") from e
     genai.configure(api_key=GEMINI_API_KEY)
     return genai
 
 @st.cache_resource(show_spinner=False)
 def get_milvus():
+    """Milvus 클라이언트 (없으면 None 반환)"""
     if not (ZILLIZ_URI and ZILLIZ_TOKEN):
         return None
+    try:
+        from pymilvus import MilvusClient
+    except ModuleNotFoundError as e:
+        raise RuntimeError("pymilvus 패키지가 없습니다. requirements.txt에 'pymilvus'를 추가하세요.") from e
     return MilvusClient(uri=ZILLIZ_URI, token=ZILLIZ_TOKEN)
 
 @st.cache_resource(show_spinner=False)
 def get_embedding_model():
-    from langchain_google_genai import GoogleGenerativeAIEmbeddings
-    if not GEMINI_API_KEY:
-        return None
-    return GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=GEMINI_API_KEY,
-    )
+    """
+    1) 허브(Endpoint) 임베딩 시도: HF_TOKEN 필요
+    2) 실패 시 로컬 임베딩으로 폴백(토큰 불필요; transformers/torch 필요)
+    """
+    # 1) Hub Endpoint (토큰 필요)
+    if HF_TOKEN.startswith("hf_"):
+        try:
+            from langchain_huggingface.embeddings import HuggingFaceEndpointEmbeddings
+            return HuggingFaceEndpointEmbeddings(
+                model="jhgan/ko-sroberta-nli",
+                task="feature-extraction",
+                huggingfacehub_api_token=HF_TOKEN,  # 정확한 파라미터명
+            )
+        except Exception as e:
+            st.warning(f"[임베딩] 허브 API 실패, 로컬 모델로 전환합니다: {e}")
+
+    # 2) Local (토큰 불필요)
+    try:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        return HuggingFaceEmbeddings(model_name="jhgan/ko-sroberta-nli")
+    except ModuleNotFoundError as e:
+        raise RuntimeError(
+            "임베딩 초기화 실패. 허브 토큰(HF_TOKEN) 또는 로컬용 패키지(transformers/sentence-transformers/torch)를 확인하세요."
+        ) from e
 
 # ================== Constants (Milvus 스키마 맞춤) ==================
-STORE_ANALYSIS_COLLECTION = "shinahn_collection_hf"       # 업로드 코드와 동일
-OUTPUT_FIELDS             = ["text", "description"]       # 스키마에 맞춤
-# (참고) VS_LEADER_COLLECTION 은 현재 사용 안 함 (3번은 사전 JSON 렌더만)
+STORE_ANALYSIS_COLLECTION = "shinahn_collection_hf"  # 노트북/기존 스키마
+OUTPUT_FIELDS             = ["text", "description"]  # 스키마 필드
 
 # ================== Utilities ==================
-def embed_query(query: str):
+def embed_query(text: str):
     model = get_embedding_model()
-    if model is None:
-        raise RuntimeError("HF_TOKEN이 설정되지 않아 임베딩 모델을 만들 수 없습니다.")
-    return model.embed_query(query)
+    try:
+        return model.embed_query(text)
+    except Exception as e:
+        raise RuntimeError("임베딩 호출 실패. HF_TOKEN/네트워크/패키지 설정을 확인하세요.") from e
 
 def milvus_search_topk(query_vec, top_k=3, output_fields=None):
     milvus = get_milvus()
     if milvus is None:
-        raise RuntimeError("Milvus 클라이언트가 설정되지 않았습니다. ZILLIZ_URI/ZILLIZ_TOKEN을 secrets에 넣으세요.")
+        raise RuntimeError("Milvus 연결 정보가 없습니다. ZILLIZ_URI/ZILLIZ_TOKEN을 Secrets에 설정하세요.")
     output_fields = output_fields or OUTPUT_FIELDS
     res = milvus.search(
         collection_name=STORE_ANALYSIS_COLLECTION,
         data=[query_vec],
         limit=top_k,
         output_fields=output_fields,
-        search_params={"metric_type": "COSINE"}
+        search_params={"metric_type": "COSINE"},
     )
     hits = []
     raw = res[0] if res else []
     for hit in raw:
-        # pymilvus MilvusClient의 결과 dict 기반
+        # MilvusClient search 결과는 dict 형태(entity 포함)일 수 있음
         if isinstance(hit, dict):
-            ent = hit.get("entity") or {}
+            ent = hit.get("entity") or hit  # 일부 버전은 바로 필드가 상위에 있음
             row = {f: ent.get(f) for f in output_fields}
         else:
-            row = {}
-            for f in output_fields:
-                val = getattr(hit, f, None)
-                if val is None and hasattr(hit, "entity"):
-                    try:
-                        val = hit.entity.get(f)
-                    except Exception:
-                        val = None
-                row[f] = val
+            row = {f: getattr(hit, f, None) for f in output_fields}
         hits.append(row)
     return hits
 
 def build_context_text(hits, max_chars=4000):
-    """text와 description을 묶어 컨텍스트로 생성"""
+    """text/description을 묶어 컨텍스트 생성"""
     pieces = []
     for i, h in enumerate(hits, 1):
         content = (h.get("text") or "").strip()
@@ -105,6 +154,11 @@ def build_context_text(hits, max_chars=4000):
     ctx = "\n\n".join(pieces)
     return ctx[:max_chars]
 
+def load_prompt_template(name: str) -> Template:
+    tmpl_path = BASE_DIR / "prompts" / f"{name}.jinja"
+    text = tmpl_path.read_text(encoding="utf-8")
+    return Template(text)
+
 def call_gemini_text(prompt_text: str, model: str = "gemini-2.5-flash") -> str:
     client = get_gemini_client()
     model_instance = client.GenerativeModel(model)
@@ -112,7 +166,6 @@ def call_gemini_text(prompt_text: str, model: str = "gemini-2.5-flash") -> str:
     return (resp.text or "").strip()
 
 def call_gemini_json(prompt_text: str, model: str = "gemini-2.5-flash"):
-    """JSON만 뽑아야 하는 2번/기타 용도"""
     txt = call_gemini_text(prompt_text, model=model)
     s, e = txt.find("{"), txt.rfind("}")
     if s < 0 or e <= s:
@@ -126,10 +179,10 @@ STORE_RAG_PROMPT = """
 
 도메인 규칙(컨텍스트에 포함된 지표 해석):
 - 값이 -999999.99 인 경우: **결측**(정보 없음)
-- '가맹점 운영 개월수 구간': **0%에 가까울수록 상위**(운영 개월 수가 높음)
-- '매출금액 구간': **0%에 가까울수록 상위**(매출 금액이 높음)
-- '매출건수 구간': **0%에 가까울수록 상위**(거래 건수가 많음)
-- '유니크 고객 수 구간': **0%에 가까울수록 상위**(고객 풀이 큼)
+- '가맹점 운영 개월수 구간': **0%에 가까울수록 상위**
+- '매출금액 구간': **0%에 가까울수록 상위**
+- '매출건수 구간': **0%에 가까울수록 상위**
+- '유니크 고객 수 구간': **0%에 가까울수록 상위**
 - 날짜/월별 지표는 **최근 24개월의 추세**가 중요. 이상치는 -999999.99로 표기될 수 있음.
 
 출력 형식(마크다운, 한국어):
@@ -160,7 +213,7 @@ STORE_RAG_PROMPT = """
 """.strip()
 
 def run_agent_store_analysis_report(user_query: str):
-    """질문(가맹점명/분석요청)을 임베딩→Milvus검색→컨텍스트→Gemini 보고서로 생성"""
+    """임베딩→Milvus검색→컨텍스트→Gemini 보고서 생성"""
     vec  = embed_query(user_query)
     hits = milvus_search_topk(vec, top_k=3, output_fields=OUTPUT_FIELDS)
     ctx  = build_context_text(hits)
@@ -168,16 +221,47 @@ def run_agent_store_analysis_report(user_query: str):
     report_md = call_gemini_text(prompt)
     return report_md, hits
 
-
-# ================== Agent 2: 보편성 분석 (JSON -> Gemini 계산/정렬/매핑) ==================
+# ================== (2) Universal: JSON → Gemini 계산/정렬/매핑 ==================
 PERSONA_AGENT_PROMPT = """
+You are a data analyst. You will receive ONE JSON report file that contains:
+- store_name
+- universal_appeal_score (precomputed)
+- personas: { persona_id: {
+    label, scores: {keyword_sum, ksf_sum, total_sum, reviews},
+    pros[], cons[], suggestions[]
+}}
 
+Your tasks (DO THEM EXACTLY):
+1) Read all personas. Compute:
+   - appeal = average of all persona total_sum, rounded to 2 decimals
+   - balance_cv = coefficient of variation of total_sum across personas (std/mean; population std), float
+   - coverage = fraction of personas with total_sum > 0  (0~1 float)
+2) Sort personas by total_sum DESC and return each with:
+   id, label, total_sum, reviews, per_review = total_sum/reviews,
+   pros[], cons[], suggestions[]
+3) Build a 1:1 mapping between cons and suggestions (pair semantically; dedupe exact duplicates).
+4) Return STRICT JSON ONLY:
+
+{
+  "metrics": {"appeal": 0.00, "balance_cv": 0.0, "coverage": 0.0},
+  "personas_sorted": [
+    {"id":"P40M","label":"40대 남성","total_sum":0,"reviews":0,"per_review":0.0,
+     "pros":["..."],"cons":["..."],"suggestions":["..."]}
+  ],
+  "action_map":[{"con":"...","suggestion":"..."}]
+}
+
+=== JSON REPORT START ===
 """
 
 def run_agent_universal(store_name: str):
-    json_path = Path("data") / f"{store_name}_persona_report.json"
-    if not json_path.exists():
-        raise FileNotFoundError(f"리포트 파일이 없습니다: {json_path}")
+    json_path = find_report_path(store_name)
+    if not json_path:
+        existing = ", ".join(sorted([p.name for p in (DATA_DIR.glob("*_persona_report.json") if DATA_DIR.exists() else [])])[:50])
+        raise FileNotFoundError(
+            f"리포트 파일을 찾을 수 없습니다: agent/data/{store_name}_persona_report.json\n"
+            f"agent/data 내 파일들: {existing or '(없음)'}"
+        )
     raw = json_path.read_text(encoding="utf-8")
     prompt = PERSONA_AGENT_PROMPT + raw + "\n=== JSON REPORT END ==="
     return call_gemini_json(prompt)
@@ -188,7 +272,7 @@ def render_persona_dashboard(result: dict):
     c1, c2, c3 = st.columns(3)
     c1.metric("우리 가게가 받는 종합 호감도", f"{m['appeal']:.2f}")
     c2.metric("페르소나별 호감도 균형지수", f"{m['balance_cv']:.4f}")
-    c3.metric("퍼소나 긍정 반응률", f"{m['coverage']*100:.1f}%")
+    c3.metric("페르소나 긍정 반응률", f"{m['coverage']*100:.1f}%")
 
     st.subheader("페르소나 순위 (total_sum 내림차순)")
     for r in result["personas_sorted"]:
@@ -205,18 +289,12 @@ def render_persona_dashboard(result: dict):
     for pair in result.get("action_map", []):
         st.markdown(f"⚠️ **문제:** {pair['con']}  \n☑️ **조치:** {pair['suggestion']}")
 
-# ================== (참고) Agent 3 LLM 프롬프트 (현재 사용 안 함: 사전 생성 JSON만 렌더)
-VS_LEADER_PAIRWISE_JSON_PROMPT = """
-(생략)  # 필요 시 다시 활성화
-"""
-
 # ================== VS Leader 비교 JSON 렌더 (옵션 B: 구조화 출력) ==================
 def render_vs_leader_pack(pack: dict) -> None:
-    """사전 생성된 비교 JSON(dict)을 읽어 화면에 설명 (옵션 B: 내러티브에서 [개선 제안] 제외, actions를 별도로 1회 표시)."""
+    """사전 생성된 비교 JSON(dict) 설명 — 내러티브에서 [개선 제안] 제외, actions만 1회 표시"""
     store_our = pack.get("store_name_our", "우리 가게")
     store_leader = pack.get("store_name_leader", "1위 가게")
     st.subheader(f"비교 결과: {store_our} vs {store_leader}")
-
 
     st.subheader("페르소나별 격차 분석")
     personas = pack.get("personas", [])
@@ -235,42 +313,31 @@ def render_vs_leader_pack(pack: dict) -> None:
         if s_our is not None and s_lead is not None and gap is not None:
             st.caption(f"점수: 우리 {s_our} / 1위 {s_lead} (gap {gap:+})")
 
-        # 내러티브: [개선 제안] 섹션 이전까지만 출력
+        # 내러티브: [개선 제안] 이전까지만 출력
         narrative = (p.get("narrative") or "").strip()
         if narrative:
             text_no_actions = narrative.split("[개선 제안]")[0].strip()
             if text_no_actions:
                 st.write(text_no_actions)
 
-        # 액션: 구조화 배열을 사용하여 한 번만 표시 + 중복 제거
+        # 액션: 구조화 배열로 1회 + 중복 제거
         actions_in = p.get("actions") or []
-        dedup_actions = []
-        seen = set()
+        dedup, seen = [], set()
         for a in actions_in:
             s = (a or "").strip()
             if s and s not in seen:
                 seen.add(s)
-                dedup_actions.append(s)
-        if dedup_actions:
+                dedup.append(s)
+        if dedup:
             st.markdown("**[개선 제안]**")
-            for a in dedup_actions:
+            for a in dedup:
                 st.write("- ", a)
 
     roadmap = pack.get("roadmap") or []
     if roadmap:
         st.subheader("우선 실행 로드맵")
         for line in roadmap:
-            st.write(" ", line)
-
-# ================== Agent 3 (Milvus 템플릿 버전이 필요하면 사용) ==================
-def run_agent_vs_leader_rag(user_query: str):
-    vec  = embed_query(user_query)
-    hits = milvus_search(VS_LEADER_COLLECTION, vec, top_k=5)
-    ctx  = build_context_text(hits)
-    tmpl = load_prompt_template("vs_leader_ko")  # prompts/vs_leader_ko.jinja 필요
-    prompt = tmpl.render(question=user_query, context=ctx)
-    out = call_gemini_json(prompt)
-    return out, hits
+            st.write("- ", line)
 
 # ================== Agent selector (3 Buttons) ==================
 if "agent" not in st.session_state:
@@ -279,11 +346,11 @@ if "agent" not in st.session_state:
 AGENTS = {
     "store_analysis": {
         "name": "🔎 우리 가게 데이터 분석",
-        "desc": "내부 KPI·고객행동을 요약하고 병목을 찾아 개선안을 제시합니다."
+        "desc": "Milvus(HF 임베딩) RAG 기반으로 상위 문맥을 찾아 보고서를 생성합니다."
     },
     "universal": {
         "name": "🌐 온라인 대중성 스코어 분석",
-        "desc": "Naver 지도 리뷰 데이터를 기반으로, 가게의 '온라인 대중성'과 '고객층별 매력도'를 종합적으로 평가합니다."
+        "desc": "Naver 지도 리뷰 JSON을 받아 보편 매력(호감도·균형·커버리지)과 페르소나 요약을 산출합니다."
     },
     "vs_leader": {
         "name": "🏆 1위 가게 vs 우리 가게 분석",
@@ -312,7 +379,7 @@ else:
 
 # ================== Branch: 2) Universal (JSON -> Gemini) ==================
 if agent == "universal":
-    store_in = st.chat_input("가게명을 입력하세요 (예: 데판야끼현, 명가떡볶이, 크레송, 타코마이너 등)")
+    store_in = st.chat_input("가게명을 입력하세요 (예: 크레송, 난포, 데판야끼현, 명가떡볶이 등)")
     if store_in:
         with st.spinner("우리 가게의 온라인 대중성 스코어 분석 중..."):
             try:
@@ -323,36 +390,36 @@ if agent == "universal":
 
 # ================== Branch: 3) VS Leader (사전 생성된 비교 JSON 자동 로드) ==================
 elif agent == "vs_leader":
-    our_store = st.text_input("우리 가게명", placeholder="예: 데판야끼현 / 명가떡볶이 / 크레송 / 타코마이너")
-
+    our_store = st.text_input("우리 가게명", placeholder="예: 난포 / 크레송 / 데판야끼현 / 명가떡볶이")
     if st.button("비교 결과 불러오기", type="primary", use_container_width=True):
         try:
             if not our_store or not our_store.strip():
                 raise ValueError("우리 가게명을 입력하세요.")
-            path = Path("data") / f"{our_store.strip()}_vs_leader.json"
-            if not path.exists():
+            path = find_vs_leader_path(our_store.strip())
+            if not path:
+                existing = ", ".join(sorted([p.name for p in (DATA_DIR.glob("*_vs_leader.json") if DATA_DIR.exists() else [])])[:50])
                 raise FileNotFoundError(
-                    f"비교 데이터 파일을 찾을 수 없습니다: {path}\n"
-                    "→ 파일을 준비해 주세요. 예) data/난포_vs_leader.json"
+                    f"비교 데이터 파일을 찾을 수 없습니다: agent/data/{our_store}_vs_leader.json\n"
+                    f"agent/data 내 파일들: {existing or '(없음)'}"
                 )
             pack = json.loads(path.read_text(encoding="utf-8"))
             render_vs_leader_pack(pack)
-
         except Exception as e:
             st.error(f"오류: {e}")
 
 # ================== Branch: 1) Store Analysis (Milvus RAG) ==================
 elif agent == "store_analysis":
-    q = st.chat_input("질문을 입력하세요 (예: 우리 가게 점심 전환율?)")
+    q = st.chat_input("가맹점 이름 또는 분석 포커스를 입력하세요 (예: 난포 점의 성장/리스크 요약)")
     if q:
-        with st.spinner("분석 중..."):
+        with st.spinner("상위 문맥 검색 및 보고서 생성 중..."):
             try:
-                report_md, hits = run_agent_store_analysis_report(q)
+                report_md, hits = run_agent_store_analysis_report(q.strip())
                 st.markdown(report_md)
                 with st.expander("참고 문맥(검색 상위 결과)"):
                     for i, h in enumerate(hits, 1):
-                        st.markdown(f"**[{i}]** {h.get('content','')}")
-                        if h.get("source"):
-                            st.caption(f"출처: {h['source']}")
+                        st.markdown(f"**[{i}]** {h.get('text','')}")
+                        desc = h.get("description")
+                        if desc:
+                            st.caption(f"설명: {desc}")
             except Exception as e:
                 st.error(f"오류: {e}")
