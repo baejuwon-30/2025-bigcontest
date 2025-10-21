@@ -337,7 +337,7 @@ def render_vs_leader_pack(pack: dict) -> None:
     if roadmap:
         st.subheader("우선 실행 로드맵")
         for line in roadmap:
-            st.write("- ", line)
+            st.write(" ", line)
 
 # ================== Agent selector (3 Buttons) ==================
 if "agent" not in st.session_state:
