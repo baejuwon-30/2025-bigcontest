@@ -398,7 +398,7 @@ elif agent == "vs_leader":
 
 # ================== Branch: 1) Store Analysis (Milvus RAG) ==================
 elif agent == "store_analysis":
-    q = st.chat_input("가맹점 이름 또는 분석 포커스를 입력하세요 (예: 동원각 점의 성장/리스크 요약)")
+    q = st.chat_input("가맹점 이름 또는 분석 포커스를 입력하세요 (예1: 동원* 또는 예2: 동원* 가맹점의 연령대 별 매출현황 요약)")
     if q:
         with st.spinner("상위 문맥 검색 및 보고서 생성 중..."):
             try:
