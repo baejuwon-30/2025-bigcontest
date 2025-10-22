@@ -78,30 +78,19 @@ def get_milvus():
 
 @st.cache_resource(show_spinner=False)
 def get_embedding_model():
-    """
-    1) 허브(Endpoint) 임베딩 시도: HF_TOKEN 필요
-    2) 실패 시 로컬 임베딩으로 폴백(토큰 불필요; transformers/torch 필요)
-    """
-    # 1) Hub Endpoint (토큰 필요)
-    if HF_TOKEN.startswith("hf_"):
-        try:
-            from langchain_huggingface.embeddings import HuggingFaceEndpointEmbeddings
-            return HuggingFaceEndpointEmbeddings(
-                model="jhgan/ko-sroberta-nli",
-                task="feature-extraction",
-                huggingfacehub_api_token=HF_TOKEN,  # 정확한 파라미터명
-            )
-        except Exception as e:
-            st.warning(f"[임베딩] 허브 API 실패, 로컬 모델로 전환합니다: {e}")
-
-    # 2) Local (토큰 불필요)
+    HF = (st.secrets.get("HF_TOKEN") or "").strip()
+    if not HF.startswith("hf_"):
+        raise RuntimeError("HF_TOKEN이 비어있거나 형식이 잘못되었습니다. (hf_로 시작해야 함)")
     try:
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-        return HuggingFaceEmbeddings(model_name="jhgan/ko-sroberta-nli")
+        from langchain_huggingface.embeddings import HuggingFaceEndpointEmbeddings
     except ModuleNotFoundError as e:
-        raise RuntimeError(
-            "임베딩 초기화 실패. 허브 토큰(HF_TOKEN) 또는 로컬용 패키지(transformers/sentence-transformers/torch)를 확인하세요."
-        ) from e
+        raise RuntimeError("langchain-huggingface 패키지가 필요합니다. requirements.txt를 확인하세요.") from e
+
+    return HuggingFaceEndpointEmbeddings(
+        model="jhgan/ko-sroberta-nli",
+        task="feature-extraction",
+        huggingfacehub_api_token=HF,  # 정확한 파라미터명
+    )
 
 # ================== Constants (Milvus 스키마 맞춤) ==================
 STORE_ANALYSIS_COLLECTION = "shinahn_collection_hf"  # 노트북/기존 스키마
