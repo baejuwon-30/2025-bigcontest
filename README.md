@@ -75,6 +75,7 @@
 
 * **Streamlit 서비스:** [https://2025-bigcontest-uwnj8yevx6qjrn5ccclqvy.streamlit.app/](https://2025-bigcontest-uwnj8yevx6qjrn5ccclqvy.streamlit.app/) 
 * **서비스 상세 설명서:** [https://drive.google.com/file/d/1RBR971U5C5fK2WNWVk12lWQDDoLx2Iin/view?usp=sharing](https://drive.google.com/file/d/1RBR971U5C5fK2WNWVk12lWQDDoLx2Iin/view?usp=sharing)
+* **서비스 시연 영상:** [https://drive.google.com/file/d/1CN2etWb0hb9LIoB7A3Fvb7jGvs5D5uMb/view?usp=sharing](https://drive.google.com/file/d/1CN2etWb0hb9LIoB7A3Fvb7jGvs5D5uMb/view?usp=sharing)
 
 ---
 ## 👥 프로젝트 팀원 소개
