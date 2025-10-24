@@ -62,7 +62,7 @@
 
 * **Frontend:** Streamlit
 * **Backend:** Python
-* **AI/LLM:** Google Gemini (`gemini-1.5-flash`)
+* **AI/LLM:** Google Gemini (`gemini-2.5-flash`)
 * **Vector Database:** Milvus (on Zilliz Cloud)
 * **Embeddings:** Hugging Face Endpoint Embeddings (`jhgan/ko-sroberta-nli`) via `langchain-huggingface`
 * **Data Handling:** Pandas
