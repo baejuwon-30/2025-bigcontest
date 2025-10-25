@@ -81,7 +81,7 @@
 ## 👥 프로젝트 팀원 소개
 |**팀원 1**|**팀원 2**|**팀원 3**|**팀원 4**|
 |:----------:|:----------:|:----------:|:----------:|
-|<img src="" width = 100 height = 100>|<img src = "agent/assets/1Asnf5J__400x400.jpg" width = 100 height = 100>|<img src = "" width = 100 height = 100>|<img src = "agent/assets/KakaoTalk_20251024_180108077.jpg" width = 100 height = 100>|    
+|<img src="" width = 100 height = 100>|<img src = "agent/assets/1Asnf5J__400x400.jpg" width = 100 height = 100>|<img src = "agent/assets/KakaoTalk_20251025_112311228.png" width = 100 height = 100>|<img src = "agent/assets/KakaoTalk_20251024_180108077.jpg" width = 100 height = 100>|    
 |[김채영]("")|[배주원](https://github.com/baejuwon-30)|[서선후](https://www.notion.so/Portfolio-29615f8c2c578096ae62f14214ac3e52?source=copy_link)|[홍승민](https://www.notion.so/296128325356807fac67d0d196f601f1?source=copy_link)|
 
 ## 🔎 팀원별 역할
